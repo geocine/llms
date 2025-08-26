@@ -1,5 +1,4 @@
-import { LLMProvider, UnifiedChatRequest } from "@/types/llm";
-import { Transformer, TransformerOptions } from "@/types/transformer";
+import { Transformer } from "@/types/transformer";
 
 export class ChutesGLMTransformer implements Transformer {
   name = "chutes-glm";
@@ -80,12 +79,11 @@ export class ChutesGLMTransformer implements Transformer {
                   if (accumulatedContent) {
                     const { toolCalls, modified } = extractToolCallsFromContent(accumulatedContent);
                     if (toolCalls.length > 0) {
-                      logger?.info(`ChutesGLM: Extracted ${toolCalls.length} tool calls from streaming content`);
                       // Send tool calls as separate chunks
                       for (const toolCall of toolCalls) {
                         const toolChunk = {
                           id: "tool_extraction",
-                          object: "chat.completion.chunk", 
+                          object: "chat.completion.chunk",
                           created: Date.now(),
                           model: "chutes-glm",
                           choices: [{
@@ -156,9 +154,6 @@ export class ChutesGLMTransformer implements Transformer {
       if (toolCalls.length > 0) {
         totalToolCallsExtracted += toolCalls.length;
         this.logger?.info(`ChutesGLM: Extracted ${toolCalls.length} tool calls from content`);
-        toolCalls.forEach((toolCall, index) => {
-          this.logger?.debug(`ChutesGLM: Tool call ${index + 1}: ${toolCall.function.name}`);
-        });
       }
       
       if (c?.message) {
@@ -183,87 +178,89 @@ export class ChutesGLMTransformer implements Transformer {
     }
 
     const toolCalls: any[] = [];
-    // Updated pattern to match tool calls without closing tags and properly capture the entire tool call for removal
-    const toolCallPattern = /<tool_call>\s*(\w+)\s*([\s\S]*?)(?=<tool_call>|$)/gm;
-    // Remove all tool call tags from content
-    let modified = content.replace(toolCallPattern, "");
-
-    const matches = [...content.matchAll(toolCallPattern)];
-    this.logger?.debug(`ChutesGLM: Found ${matches.length} tool call patterns in content`);
+    const lines = content.split('\n');
+    let modifiedLines: string[] = [];
+    let i = 0;
     
-    for (const match of matches) {
-      const [fullMatch, toolName, argsContent] = match;
-      // Skip if this is just a tool name without actual content (might be a false positive)
-      if (!toolName?.trim()) continue;
+    while (i < lines.length) {
+      const line = lines[i];
       
-      const id = String(Math.abs(this.hashString(fullMatch)));
-      const args = this.parseArgsSection(argsContent?.trim() || "");
-      
-      // Check if this is a generic tool_0 call with the actual tool name in arguments
-      let finalToolName = toolName.trim();
-      let finalArgs = args;
-      
-      if (finalToolName === "tool_0" && args.arg_key === "todos") {
-        // This appears to be a TodoWrite tool call
-        finalToolName = "TodoWrite";
-        // The actual arguments are in arg_value
-        if (args.arg_value) {
-          try {
-            finalArgs = JSON.parse(args.arg_value);
-          } catch {
-            finalArgs = args.arg_value;
+      // Check for tool call format: 🎬ToolName
+      const toolStartMatch = line.match(/^<tool_call>(\w+)$/);
+      if (toolStartMatch) {
+        const toolName = toolStartMatch[1];
+        const args: Record<string, any> = {};
+        i++; // Move to next line
+        
+        // Parse arguments until we find the closing marker or reach a new tool call or end
+        while (i < lines.length) {
+          const currentLine = lines[i].trim();
+          
+          // Check for closing marker
+          if (currentLine === "</tool_call>") {
+            i++;
+            break;
           }
+          
+          // Check for start of new tool call
+          if (currentLine.match(/^<tool_call>\w+$/)) {
+            // Don't increment i, let the outer loop handle this line
+            break;
+          }
+          
+          // Parse argument key
+          const argKeyMatch = lines[i].match(/<arg_key>([^<]+)<\/arg_key>/);
+          if (argKeyMatch) {
+            const argKey = argKeyMatch[1];
+            i++; // Move to value line
+            if (i < lines.length) {
+              const argValueMatch = lines[i].match(/<arg_value>([^<]+)<\/arg_value>/);
+              if (argValueMatch) {
+                let argValue = argValueMatch[1];
+                
+                // Handle byte string representation
+                if ((argValue.startsWith("b'") && argValue.endsWith("'")) ||
+                    (argValue.startsWith('b"') && argValue.endsWith('"'))) {
+                  argValue = argValue.slice(2, -1);
+                }
+                
+                // Try to parse JSON
+                try {
+                  const parsedValue = JSON.parse(argValue);
+                  args[argKey] = typeof parsedValue === 'string' &&
+                                (parsedValue.startsWith('[') || parsedValue.startsWith('{')) ?
+                                JSON.parse(parsedValue) : parsedValue;
+                } catch {
+                  // If JSON parsing fails, use the raw value
+                  args[argKey] = argValue;
+                }
+              }
+            }
+          }
+          i++;
         }
+        
+        // Create tool call
+        toolCalls.push({
+          id: String(Math.abs(this.hashString(toolName + JSON.stringify(args)))),
+          type: "function",
+          function: {
+            name: toolName,
+            arguments: JSON.stringify(args),
+          },
+        });
+        continue;
       }
       
-      this.logger?.debug(`ChutesGLM: Parsing tool call - name: ${finalToolName}, id: ${id}`);
-      
-      toolCalls.push({
-        id,
-        type: "function",
-        function: {
-          name: finalToolName,
-          arguments: JSON.stringify(finalArgs),
-        },
-      });
+      // Add line to modified content
+      modifiedLines.push(line);
+      i++;
     }
+    
+    // Join lines and clean up excessive whitespace
+    let modified = modifiedLines.join('\n').replace(/\n\s*\n/g, '\n').trim();
     
     return { toolCalls, modified };
-  }
-
-  private parseArgsSection(argsSection: string): Record<string, any> {
-    const args: Record<string, any> = {};
-    if (!argsSection) return args;
-
-    const argPattern = /<([^>]+)>(.*?)<\/\1>/gs;
-    const matches = [...argsSection.matchAll(argPattern)];
-
-    this.logger?.debug(`ChutesGLM: Parsing ${matches.length} argument sections`);
-
-    for (const match of matches) {
-      const [, key, value] = match;
-      let processedValue = value;
-
-      const isBytesSingle = processedValue.startsWith("b'") && processedValue.endsWith("'");
-      const isBytesDouble = processedValue.startsWith('b"') && processedValue.endsWith('"');
-      if (isBytesSingle || isBytesDouble) {
-        processedValue = processedValue.slice(2, -1);
-        this.logger?.debug(`ChutesGLM: Decoded bytes string for argument: ${key}`);
-      }
-
-      processedValue = processedValue.replace(/\\"/g, '"');
-
-      try {
-        args[key] = JSON.parse(processedValue);
-        this.logger?.debug(`ChutesGLM: Successfully parsed JSON for argument: ${key}`);
-      } catch {
-        // If not valid JSON, return the raw (possibly bytes-decoded) string
-        args[key] = processedValue;
-        this.logger?.debug(`ChutesGLM: Using raw string value for argument: ${key}`);
-      }
-    }
-
-    return args;
   }
 
   private hashString(str: string): number {
