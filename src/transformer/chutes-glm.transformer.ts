@@ -183,15 +183,16 @@ export class ChutesGLMTransformer implements Transformer {
     }
 
     const toolCalls: any[] = [];
-    // Updated pattern to match tool calls without closing tags
-    const toolCallPattern = /(<tool_call>\s*(\w+)\s*([\s\S]*?))(?=<tool_call>|$)/gm;
-    let modified = content.replace(toolCallPattern, "");
+    // Updated pattern to match tool calls without closing tags and properly capture the entire tool call for removal
+    const toolCallPattern = /<tool_call>\s*(\w+)\s*([\s\S]*?)(?=<tool_call>|$)/gm;
+    // Remove all tool call tags from content
+    let modified = content.replace(/<tool_call>\s*\w+\s*[\s\S]*?(?=<tool_call>|$)/gm, "");
 
-    const matches = [...content.matchAll(toolCallPattern)];
+    const matches = [...content.matchAll(/<tool_call>\s*(\w+)\s*([\s\S]*?)(?=<tool_call>|$)/gm)];
     this.logger?.debug(`ChutesGLM: Found ${matches.length} tool call patterns in content`);
     
     for (const match of matches) {
-      const [fullMatch, , toolName, argsContent] = match;
+      const [fullMatch, toolName, argsContent] = match;
       // Skip if this is just a tool name without actual content (might be a false positive)
       if (!toolName?.trim()) continue;
       

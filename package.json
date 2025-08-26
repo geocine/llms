@@ -14,7 +14,9 @@
   "scripts": {
     "tsx": "tsx",
     "build": "tsx scripts/build.ts",
+    "build:dev": "tsx scripts/build.ts --dev",
     "build:watch": "tsx scripts/build.ts --watch",
+    "build:watch:dev": "tsx scripts/build.ts --watch --dev",
     "dev": "nodemon",
     "start": "node dist/cjs/server.cjs",
     "start:esm": "node dist/esm/server.mjs",

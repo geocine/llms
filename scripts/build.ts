@@ -1,11 +1,12 @@
 import * as esbuild from "esbuild";
 
 const watch = process.argv.includes("--watch");
+const dev = process.argv.includes("--dev");
 
 const baseConfig: esbuild.BuildOptions = {
   entryPoints: ["src/server.ts"],
   bundle: true,
-  minify: true,
+  minify: !dev, // Disable minification in dev mode
   sourcemap: true,
   platform: "node",
   target: "node18",
@@ -28,7 +29,7 @@ const esmConfig: esbuild.BuildOptions = {
 };
 
 async function build() {
-  console.log("Building CJS and ESM versions...");
+  console.log(`Building CJS and ESM versions${dev ? ' (development mode - no minification)' : ''}...`);
   
   const cjsCtx = await esbuild.context(cjsConfig);
   const esmCtx = await esbuild.context(esmConfig);
